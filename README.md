@@ -29,6 +29,8 @@ context switch.
 |---|---|
 | 441 | `hpc_config(hpm, event)` |
 | 442 | `hpc_read(hpm, *val)` |
+| 443 | `hpc_inhibit(hpm)` |
+| 444 | `hpc_enable(hpm)` |
 | 445 | `hpc_reset(hpm)` |
 | 446 | `hpc_start()` |
 | 447 | `hpc_stop()` |
