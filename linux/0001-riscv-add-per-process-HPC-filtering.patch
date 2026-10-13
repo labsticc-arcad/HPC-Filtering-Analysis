@@ -1,4 +1,4 @@
-From ded502e5edfdd6dabb4f13462c01e645c74a6b9a Mon Sep 17 00:00:00 2001
+From 42bd3da245c889d5c2945828fb31ef694f79d7e9 Mon Sep 17 00:00:00 2001
 From: Adam Henault <contact@adamhlt.com>
 Date: Tue, 13 Oct 2026 10:04:12 +0200
 Subject: [PATCH] riscv: add per-process HPC filtering

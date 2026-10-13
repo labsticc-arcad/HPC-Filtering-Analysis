@@ -1,4 +1,4 @@
-# HPC-Filtering-SW
+# HPC-Filtering-Analysis
 
 Software patches implementing **per-process filtering of RISC-V hardware
 performance counters (HPC)**, developed as part of a PhD on HPC-based
@@ -54,12 +54,12 @@ start/stop and debug output.
 # OpenSBI
 git clone https://github.com/riscv-software-src/opensbi.git && cd opensbi
 git checkout be245acfffa297b5ed4e0c7bb473a6bd55231bf8
-git am /path/to/HPC-Filtering-SW/opensbi/*.patch
+git am /path/to/HPC-Filtering-Analysis/opensbi/*.patch
 
 # Linux
 git clone --branch v5.10.7 --depth 1 \
     https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git && cd linux
-git am /path/to/HPC-Filtering-SW/linux/*.patch
+git am /path/to/HPC-Filtering-Analysis/linux/*.patch
 
 # Userspace tool
 make -C tools/hpc CROSS_COMPILE=riscv64-linux-gnu-

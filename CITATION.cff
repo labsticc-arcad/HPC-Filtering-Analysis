@@ -1,10 +1,10 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite the associated paper."
-title: "HPC-Filtering-SW"
+title: "HPC-Filtering-Analysis"
 authors:
   - family-names: Henault
     given-names: Adam
-repository-code: "https://github.com/adamhlt/HPC-Filtering-SW"
+repository-code: "https://github.com/labsticc-arcad/HPC-Filtering-Analysis"
 preferred-citation:
   type: conference-paper
   title: "Statistical Analysis of HPC Filtering: Towards Reliable Use in Security"

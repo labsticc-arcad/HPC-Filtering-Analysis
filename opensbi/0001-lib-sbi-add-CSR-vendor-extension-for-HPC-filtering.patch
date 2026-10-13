@@ -1,4 +1,4 @@
-From f27205376ef87b6c77dc0ef829327c4d9b5df424 Mon Sep 17 00:00:00 2001
+From 60187b1af51b3786630761b6a56fe7f727d8ec4c Mon Sep 17 00:00:00 2001
 From: Adam Henault <contact@adamhlt.com>
 Date: Tue, 13 Oct 2026 09:53:20 +0200
 Subject: [PATCH] lib: sbi: add CSR vendor extension for HPC filtering
