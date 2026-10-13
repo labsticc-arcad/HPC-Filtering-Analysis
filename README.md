@@ -77,7 +77,7 @@ a list of [Embench-IoT](https://github.com/embench/embench-iot) binaries
 
 If you use this work, please cite:
 
-> A. Henault, C. Monière, T. Philippe and V. Lapôtre, "Statistical Analysis
+> A. Henault, C. Monière, P. Tanguy and V. Lapôtre, "Statistical Analysis
 > of HPC Filtering: Towards Reliable Use in Security", *HS3 2026: 2nd
 > Workshop on Hardware-Supported Software Security*, Rome, Italy, Sep. 2026.
 > [hal-05757105](https://hal.science/hal-05757105)
@@ -85,7 +85,7 @@ If you use this work, please cite:
 ```bibtex
 @inproceedings{henault:hal-05757105,
   title     = {{Statistical Analysis of HPC Filtering: Towards Reliable Use in Security}},
-  author    = {Henault, Adam and Moni{\`e}re, Camille and Philippe, Tanguy and Lap{\^o}tre, Vianney},
+  author    = {Henault, Adam and Moni{\`e}re, Camille and Tanguy, Philippe and Lap{\^o}tre, Vianney},
   booktitle = {{HS3 2026: 2nd Workshop on Hardware-Supported Software Security}},
   address   = {Rome, Italy},
   year      = {2026},
