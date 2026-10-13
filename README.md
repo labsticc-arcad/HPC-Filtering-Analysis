@@ -5,6 +5,12 @@ performance counters (HPC)**, developed as part of a PhD on HPC-based
 detection, on the [Cheshire](https://github.com/pulp-platform/cheshire)
 SoC (CVA6) running Linux.
 
+The project is designed to be applied to the
+[CVA6-SDK](https://github.com/pulp-platform/cva6-sdk/tree/cheshire) used by
+Cheshire (`sw/deps/cva6-sdk`), which builds the OpenSBI firmware and the
+Linux image (through Buildroot) booted on the SoC. See
+[Integration with Cheshire](#integration-with-cheshire).
+
 This implementation is the one evaluated in
 [*Statistical Analysis of HPC Filtering: Towards Reliable Use in Security*](https://hal.science/hal-05757105)
 (HS3 2026, 2nd Workshop on Hardware-Supported Software Security).
@@ -19,7 +25,7 @@ context switch.
 | Path | Applies to | License |
 |---|---|---|
 | `linux/0001-riscv-add-per-process-HPC-filtering.patch` | Linux **v5.10.7** (stable, `659361086d8b`) | GPL-2.0-only |
-| `opensbi/0001-lib-sbi-add-CSR-vendor-extension-for-HPC-filtering.patch` | OpenSBI **`be245acf`** (v0.9-166, as pinned by [pulp-platform/cva6-sdk](https://github.com/pulp-platform/cva6-sdk)) | BSD-2-Clause |
+| `opensbi/0001-lib-sbi-add-CSR-vendor-extension-for-HPC-filtering.patch` | OpenSBI v0.9: **`60fad1a`** (Cheshire's CVA6-SDK) or `be245acf` (upstream CVA6-SDK) | BSD-2-Clause |
 | `tools/hpc/hpc.c` | Userspace control tool | MIT |
 
 ### Linux patch
@@ -48,7 +54,40 @@ Adds an SBI ecall extension (`lib/sbi/sbi_csr_interface.c`) giving S-mode
 access to the M-mode HPM CSRs: configure, read, reset, inhibit/enable,
 start/stop and debug output.
 
-## Usage
+## Integration with Cheshire
+
+Developed and used with Cheshire's CVA6-SDK at `55c1371` (v0.3.0-42), which pins
+OpenSBI `60fad1a` and builds Linux v5.10.7 with Buildroot 2021.08.
+
+```sh
+cd cheshire
+git submodule update --init --recursive sw/deps/cva6-sdk
+cd sw/deps/cva6-sdk
+HPCF=/path/to/HPC-Filtering-Analysis
+
+# OpenSBI: a submodule built directly by the SDK Makefile
+git -C opensbi am $HPCF/opensbi/*.patch
+
+# Linux: Buildroot applies linux_patch/*.patch (BR2_LINUX_KERNEL_PATCH)
+# in alphabetical order; number it after Cheshire's own patches (0001-0008)
+cp $HPCF/linux/0001-riscv-add-per-process-HPC-filtering.patch \
+   linux_patch/0009-riscv-add-per-process-HPC-filtering.patch
+
+# Userspace tool: build it with the SDK toolchain and place it in rootfs/,
+# the Buildroot overlay (BR2_ROOTFS_OVERLAY) embedded in the initramfs
+make gcc
+make -C $HPCF/tools/hpc CROSS_COMPILE=$PWD/buildroot/output/host/bin/riscv64-buildroot-linux-gnu-
+cp $HPCF/tools/hpc/hpc rootfs/hpc.elf
+
+# Build fw_payload.bin and uImage (install64/), then follow Cheshire's
+# documentation to boot them
+make images
+```
+
+The benchmark binaries used by `--run` multi-process mode (`aes.elf`,
+`crc32.elf`, ...) must also be copied to `rootfs/`.
+
+## Standalone usage
 
 ```sh
 # OpenSBI
@@ -64,9 +103,6 @@ git am /path/to/HPC-Filtering-Analysis/linux/*.patch
 # Userspace tool
 make -C tools/hpc CROSS_COMPILE=riscv64-linux-gnu-
 ```
-
-With the cva6-sdk, the patches can also be placed in the buildroot/OpenSBI
-patch directories so that they are applied during the build.
 
 Run `./hpc` without arguments to see all options. In multi-process mode
 (`--run N MONITORED EXEC SEED ...`) the non-monitored children are picked from
