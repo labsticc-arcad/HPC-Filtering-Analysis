@@ -5,6 +5,10 @@ performance counters (HPC)**, developed as part of a PhD on HPC-based
 detection, on the [Cheshire](https://github.com/pulp-platform/cheshire)
 SoC (CVA6) running Linux.
 
+This implementation is the one evaluated in
+[*Statistical Analysis of HPC Filtering: Towards Reliable Use in Security*](https://hal.science/hal-05757105)
+(HS3 2026, 2nd Workshop on Hardware-Supported Software Security).
+
 When filtering is enabled, the counters (`mhpmcounter3`–`mhpmcounter8`) only
 accumulate while the selected process runs in U-mode: they are stopped on
 trap entry from U-mode, restarted on return to U-mode, and switched on every
@@ -68,6 +72,28 @@ Run `./hpc` without arguments to see all options. In multi-process mode
 (`--run N MONITORED EXEC SEED ...`) the non-monitored children are picked from
 a list of [Embench-IoT](https://github.com/embench/embench-iot) binaries
 (`./aes.elf`, `./crc32.elf`, ...), which must be built separately (GPL-3.0).
+
+## Citation
+
+If you use this work, please cite:
+
+> A. Henault, C. Monière, T. Philippe and V. Lapôtre, "Statistical Analysis
+> of HPC Filtering: Towards Reliable Use in Security", *HS3 2026: 2nd
+> Workshop on Hardware-Supported Software Security*, Rome, Italy, Sep. 2026.
+> [hal-05757105](https://hal.science/hal-05757105)
+
+```bibtex
+@inproceedings{henault:hal-05757105,
+  title     = {{Statistical Analysis of HPC Filtering: Towards Reliable Use in Security}},
+  author    = {Henault, Adam and Moni{\`e}re, Camille and Philippe, Tanguy and Lap{\^o}tre, Vianney},
+  booktitle = {{HS3 2026: 2nd Workshop on Hardware-Supported Software Security}},
+  address   = {Rome, Italy},
+  year      = {2026},
+  month     = sep,
+  url       = {https://hal.science/hal-05757105},
+  hal_id    = {hal-05757105},
+}
+```
 
 ## Licensing
 

@@ -11,6 +11,6 @@ SPDX-FileCopyrightText = ["2025 Adam Henault <contact@adamhlt.com>", "2025 Lab-S
 SPDX-License-Identifier = "BSD-2-Clause"
 
 [[annotations]]
-path = ["README.md", "REUSE.toml", ".gitignore"]
+path = ["README.md", "REUSE.toml", ".gitignore", "CITATION.cff"]
 SPDX-FileCopyrightText = ["2025 Adam Henault <contact@adamhlt.com>", "2025 Lab-STICC"]
 SPDX-License-Identifier = "MIT"

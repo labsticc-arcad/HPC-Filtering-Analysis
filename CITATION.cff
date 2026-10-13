@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated paper."
+title: "HPC-Filtering-SW"
+authors:
+  - family-names: Henault
+    given-names: Adam
+repository-code: "https://github.com/adamhlt/HPC-Filtering-SW"
+preferred-citation:
+  type: conference-paper
+  title: "Statistical Analysis of HPC Filtering: Towards Reliable Use in Security"
+  authors:
+    - family-names: Henault
+      given-names: Adam
+    - family-names: Monière
+      given-names: Camille
+    - family-names: Philippe
+      given-names: Tanguy
+    - family-names: Lapôtre
+      given-names: Vianney
+  collection-title: "HS3 2026: 2nd Workshop on Hardware-Supported Software Security"
+  conference:
+    name: "HS3 2026: 2nd Workshop on Hardware-Supported Software Security"
+    city: Rome
+    country: IT
+    date-start: 2026-09-17
+  year: 2026
+  month: 9
+  url: "https://hal.science/hal-05757105"
+  identifiers:
+    - type: other
+      value: "hal-05757105"
+      description: HAL identifier
