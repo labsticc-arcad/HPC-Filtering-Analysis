@@ -1,0 +1,760 @@
+From 404d8d3f5f3254d522e7ef28cab36f0bf42e68c6 Mon Sep 17 00:00:00 2001
+From: Adam Henault <contact@adamhlt.com>
+Date: Tue, 13 Oct 2026 09:53:20 +0200
+Subject: [PATCH] riscv: add per-process HPC filtering
+
+Add a kernel/hpc subsystem that gates RISC-V hardware performance
+counters on context switch and trap entry so that only the events of a
+selected PID are accounted.
+
+- entry.S: stop/restart counters on U-mode trap entry/exit
+- sched/core.c: account/switch counters on context switch
+- new syscalls 441-450 (hpc_config, hpc_read, hpc_reset, hpc_start,
+  hpc_stop, hpc_toggle_debug, hpc_toggle_filtering, hpc_set_pid_filter)
+- SBI interface to the matching OpenSBI vendor extension
+- debugfs log of filtered samples
+---
+ arch/riscv/kernel/entry.S         |  56 ++++++
+ include/linux/syscalls.h          |  12 ++
+ include/uapi/asm-generic/unistd.h |  24 ++-
+ kernel/Makefile                   |   1 +
+ kernel/hpc/Makefile               |   4 +
+ kernel/hpc/hpc_filtering.c        | 273 ++++++++++++++++++++++++++++++
+ kernel/hpc/hpc_filtering.h        |  34 ++++
+ kernel/hpc/sbi_hpc.c              |  73 ++++++++
+ kernel/hpc/sbi_hpc.h              |  32 ++++
+ kernel/hpc/syscall_hpc.c          |  79 +++++++++
+ kernel/sched/core.c               |   4 +
+ 11 files changed, 591 insertions(+), 1 deletion(-)
+ create mode 100644 kernel/hpc/Makefile
+ create mode 100644 kernel/hpc/hpc_filtering.c
+ create mode 100644 kernel/hpc/hpc_filtering.h
+ create mode 100644 kernel/hpc/sbi_hpc.c
+ create mode 100644 kernel/hpc/sbi_hpc.h
+ create mode 100644 kernel/hpc/syscall_hpc.c
+
+diff --git a/arch/riscv/kernel/entry.S b/arch/riscv/kernel/entry.S
+index 524d918..d94b056 100644
+--- a/arch/riscv/kernel/entry.S
++++ b/arch/riscv/kernel/entry.S
+@@ -97,6 +97,32 @@ _save_context:
+ 	la gp, __global_pointer$
+ .option pop
+ 
++	# ----- GATE ENTRY (STOP) : seulement si on vient de U-mode -----
++    csrr    t2, sstatus
++    andi    t2, t2, (1 << 8)          # SPP (1 = prev S, 0 = prev U)
++    bnez    t2, 9f                    # prev S-mode -> ne rien faire
++
++	mv      t4, a0
++    mv      t5, a1
++    mv      t6, a6
++    mv      t3, a7
++
++    # ---- SBI STOP (adapter EID/FID à ton firmware) ----
++    li      a7, 0x0B000000            # EID vendor HPC (exemple)
++    li      a6, 6                     # FID STOP (exemple)
++    mv      a0, zero
++    mv      a1, zero
++    ecall                               # on ignore a0 (err) ici
++
++	mv      a0, t4
++    mv      a1, t5
++    mv      a6, t6
++    mv      a7, t3
++
++    # ---------------------------------------------------
++
++9:  # ----- fin ENTRY -----
++
+ #ifdef CONFIG_TRACE_IRQFLAGS
+ 	call trace_hardirqs_off
+ #endif
+@@ -131,6 +157,7 @@ skip_context_tracking:
+ 	 * Exceptions run with interrupts enabled or disabled depending on the
+ 	 * state of SR_PIE in m/sstatus.
+ 	 */
++
+ 	andi t0, s1, SR_PIE
+ 	beqz t0, 1f
+ 	csrs CSR_STATUS, SR_IE
+@@ -218,6 +245,7 @@ ret_from_syscall_rejected:
+ 
+ ret_from_exception:
+ 	REG_L s0, PT_STATUS(sp)
++
+ 	csrc CSR_STATUS, SR_IE
+ #ifdef CONFIG_TRACE_IRQFLAGS
+ 	call trace_hardirqs_off
+@@ -252,6 +280,33 @@ resume_userspace:
+ 	csrw CSR_SCRATCH, tp
+ 
+ restore_all:
++
++	# ----- GATE ENTRY (START) : seulement si on vient de U-mode -----
++    csrr    t2, sstatus
++    andi    t2, t2, (1 << 8)          # SPP (1 = prev S, 0 = prev U)
++    bnez    t2, 9f                    # prev S-mode -> ne rien faire
++
++	mv      t4, a0
++    mv      t5, a1
++    mv      t6, a6
++    mv      t3, a7
++
++    # ---- SBI START (adapter EID/FID à ton firmware) ----
++    li      a7, 0x0B000000            # EID vendor HPC (exemple)
++    li      a6, 5                     # FID STOP (exemple)
++    mv      a0, zero
++    mv      a1, zero
++    ecall                               # on ignore a0 (err) ici
++
++	mv      a0, t4
++    mv      a1, t5
++    mv      a6, t6
++    mv      a7, t3
++
++    # ---------------------------------------------------
++
++9:  # ----- fin ENTRY -----
++
+ #ifdef CONFIG_TRACE_IRQFLAGS
+ 	REG_L s1, PT_STATUS(sp)
+ 	andi t0, s1, SR_PIE
+@@ -398,6 +453,7 @@ ENDPROC(ret_from_kernel_thread)
+  */
+ ENTRY(__switch_to)
+ 	/* Save context into prev->thread */
++
+ 	li    a4,  TASK_THREAD_RA
+ 	add   a3, a0, a4
+ 	add   a4, a1, a4
+diff --git a/include/linux/syscalls.h b/include/linux/syscalls.h
+index 37bea07..45ff7fc 100644
+--- a/include/linux/syscalls.h
++++ b/include/linux/syscalls.h
+@@ -1348,3 +1348,15 @@ int __sys_getsockopt(int fd, int level, int optname, char __user *optval,
+ int __sys_setsockopt(int fd, int level, int optname, char __user *optval,
+ 		int optlen);
+ #endif
++
++/* HPC CUSTOM SYSCALL */
++asmlinkage long sys_hpc_config(unsigned long hpm, unsigned long event);
++asmlinkage long sys_hpc_read(unsigned long hpm, unsigned long __user *val);
++asmlinkage long sys_hpc_inhibit(unsigned long hpm);
++asmlinkage long sys_hpc_enable(unsigned long hpm);
++asmlinkage long sys_hpc_reset(unsigned long hpm);
++asmlinkage long sys_hpc_start(void);
++asmlinkage long sys_hpc_stop(void);
++asmlinkage long sys_hpc_toggle_debug(void);
++asmlinkage long sys_hpc_toggle_filtering(void);
++asmlinkage long sys_hpc_set_pid_filter(int pid);
+\ No newline at end of file
+diff --git a/include/uapi/asm-generic/unistd.h b/include/uapi/asm-generic/unistd.h
+index 2056318..a3f4846 100644
+--- a/include/uapi/asm-generic/unistd.h
++++ b/include/uapi/asm-generic/unistd.h
+@@ -860,8 +860,30 @@ __SYSCALL(__NR_faccessat2, sys_faccessat2)
+ #define __NR_process_madvise 440
+ __SYSCALL(__NR_process_madvise, sys_process_madvise)
+ 
++// CUSTOM SYSCALL FOR HPC
++#define __NR_hpc_config        441
++__SYSCALL(__NR_hpc_config, sys_hpc_config)
++#define __NR_hpc_read          442
++__SYSCALL(__NR_hpc_read, sys_hpc_read)
++#define __NR_hpc_inhibit       443
++__SYSCALL(__NR_hpc_inhibit, sys_hpc_inhibit)
++#define __NR_hpc_enable        444
++__SYSCALL(__NR_hpc_enable, sys_hpc_enable)
++#define __NR_hpc_reset         445
++__SYSCALL(__NR_hpc_reset, sys_hpc_reset)
++#define __NR_hpc_start         446
++__SYSCALL(__NR_hpc_start, sys_hpc_start)
++#define __NR_hpc_stop          447
++__SYSCALL(__NR_hpc_stop, sys_hpc_stop)
++#define __NR_hpc_toggle_debug  448
++__SYSCALL(__NR_hpc_toggle_debug, sys_hpc_toggle_debug)
++#define __NR_hpc_toggle_filtering  449
++__SYSCALL(__NR_hpc_toggle_filtering, sys_hpc_toggle_filtering)
++#define __NR_hpc_set_pid_filter  450
++__SYSCALL(__NR_hpc_set_pid_filter, sys_hpc_set_pid_filter)
++
+ #undef __NR_syscalls
+-#define __NR_syscalls 441
++#define __NR_syscalls 455
+ 
+ /*
+  * 32 bit systems traditionally used different
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 6c9f199..64bca63 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -47,6 +47,7 @@ obj-y += rcu/
+ obj-y += livepatch/
+ obj-y += dma/
+ obj-y += entry/
++obj-y += hpc/
+ 
+ obj-$(CONFIG_CHECKPOINT_RESTORE) += kcmp.o
+ obj-$(CONFIG_FREEZER) += freezer.o
+diff --git a/kernel/hpc/Makefile b/kernel/hpc/Makefile
+new file mode 100644
+index 0000000..da25252
+--- /dev/null
++++ b/kernel/hpc/Makefile
+@@ -0,0 +1,4 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++# Copyright (C) 2025 Lab-STICC
++obj-y += sbi_hpc.o syscall_hpc.o hpc_filtering.o
+diff --git a/kernel/hpc/hpc_filtering.c b/kernel/hpc/hpc_filtering.c
+new file mode 100644
+index 0000000..2ec3ade
+--- /dev/null
++++ b/kernel/hpc/hpc_filtering.c
+@@ -0,0 +1,273 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (C) 2025 Lab-STICC
++ */
++
++#include <linux/debugfs.h>
++#include <linux/kfifo.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/fs.h>
++#include <linux/module.h>
++#include <linux/sched.h>
++
++#include "hpc_filtering.h"
++
++/*
++ * Modèle simple pour 1 cœur et 1 PID :
++ * - Les HPM tournent en continu (free-running).
++ * - À chaque context switch, on lit now[], on fait delta = now - last_snapshot.
++ * - On attribue 100% du delta à la tâche qui sort (prev).
++ * - On cumule dans deux agrégats :
++ *      accum_global[] : activité totale du cœur
++ *      accum_pid[]    : activité du PID suivi (si prev->pid == pid_filter)
++ *
++ * Aucun snapshot à l'entrée/sortie d'exception, pas de structures par tâche.
++ */
++
++/* --------------------- LOG via debugfs (remplace printk) ------------------ */
++
++#define HPC_LOG_FIFO_SIZE   (256 * 1024) /* 256KB de tampon pour les lignes */
++#define HPC_LOG_LINE_MAX    1024
++
++static struct dentry *hpc_dbg_dir;
++static struct dentry *hpc_dbg_file;
++
++/* Buffer circulaire + lock */
++static DECLARE_KFIFO(hpc_log_fifo, char, HPC_LOG_FIFO_SIZE);
++static DEFINE_SPINLOCK(hpc_log_lock);
++
++/* Push non-bloquant d'une ligne dans le FIFO. Retourne nb d'octets poussés. */
++static size_t hpc_log_push(const char *src, size_t len)
++{
++    unsigned long flags;
++    size_t pushed;
++
++    if (!len)
++        return 0;
++
++    /* Clip à la taille max d'une ligne */
++    if (len > HPC_LOG_LINE_MAX)
++        len = HPC_LOG_LINE_MAX;
++
++    spin_lock_irqsave(&hpc_log_lock, flags);
++    pushed = kfifo_in(&hpc_log_fifo, src, len);
++    spin_unlock_irqrestore(&hpc_log_lock, flags);
++
++    return pushed;
++}
++
++static ssize_t hpc_log_read(struct file *file, char __user *buf,
++                            size_t len, loff_t *ppos)
++{
++    unsigned long flags;
++    int ret;
++    unsigned int copied = 0;        /* <-- kfifo_to_user veut unsigned int* */
++    unsigned int ulen;
++
++    if (len == 0)
++        return 0;
++
++    /* Taille demandée dans le type attendu par kfifo_to_user */
++    ulen = (unsigned int)len;
++
++    /* On lit ce qu'il y a dans le FIFO (comportement type pipe) */
++    spin_lock_irqsave(&hpc_log_lock, flags);
++    ret = kfifo_to_user(&hpc_log_fifo, buf, ulen, &copied);
++    spin_unlock_irqrestore(&hpc_log_lock, flags);
++
++    if (ret)
++        return ret;
++
++    if (copied == 0)
++        return 0;   /* rien à lire -> EOF immédiat pour cette lecture */
++
++    /* Avancer l'offset pour permettre des lectures successives avec cat */
++    *ppos += copied;
++
++    return copied;
++}
++
++static const struct file_operations hpc_log_fops = {
++    .owner = THIS_MODULE,
++    .read  = hpc_log_read,
++    .llseek = no_llseek,
++};
++
++static void hpc_log_debugfs_init(void)
++{
++    /* Init FIFO une seule fois (kfifo statique déjà alloué via macro). */
++    INIT_KFIFO(hpc_log_fifo);
++
++    hpc_dbg_dir = debugfs_create_dir("hpc_monitor", NULL);
++    if (IS_ERR_OR_NULL(hpc_dbg_dir)) {
++        pr_warn("hpc: debugfs dir creation failed\n");
++        hpc_dbg_dir = NULL;
++        return;
++    }
++
++    hpc_dbg_file = debugfs_create_file("log", 0444, hpc_dbg_dir, NULL, &hpc_log_fops);
++    if (IS_ERR_OR_NULL(hpc_dbg_file)) {
++        pr_warn("hpc: debugfs file creation failed\n");
++        hpc_dbg_file = NULL;
++    }
++}
++
++static void hpc_log_debugfs_exit(void)
++{
++    if (hpc_dbg_file)
++        debugfs_remove(hpc_dbg_file);
++    if (hpc_dbg_dir)
++        debugfs_remove(hpc_dbg_dir);
++    hpc_dbg_file = NULL;
++    hpc_dbg_dir = NULL;
++}
++
++/* --------------------- HPC logique d’échantillonnage ---------------------- */
++
++static int hpc_toogle_filtering = 0;        /* 0 = off, 1 = on */
++static int pid_filter = -1;                 /* -1 = pas de PID suivi */
++
++static unsigned long last_snapshot[HPC_NUM];/* dernier snapshot lu */
++static int last_valid = 0;                  /* snapshot initial pris ? */
++
++static unsigned long accum_pid[HPC_NUM];    /* cumul PID filtré */
++static unsigned long accum_global[HPC_NUM]; /* cumul global du cœur */
++
++/* ---- API syscalls ------------------------------------------------------- */
++
++int toogle_filtering(void)
++{
++    hpc_toogle_filtering = !hpc_toogle_filtering;
++
++    memset(accum_pid, 0, sizeof(accum_pid));
++    memset(accum_global, 0, sizeof(accum_global));
++    memset(last_snapshot, 0, sizeof(last_snapshot));
++    last_valid = 0;
++
++    /* Petite trace d'état dans le buffer aussi */
++    {
++        char msg[64];
++        int l = scnprintf(msg, sizeof(msg), "FILTERING %s\n",
++                          hpc_toogle_filtering ? "ON" : "OFF");
++        if (hpc_log_push(msg, l) != l)
++            pr_info_ratelimited("hpc: log fifo full (state)\n");
++    }
++
++    return hpc_toogle_filtering;
++}
++
++void set_pid_filter(int pid)
++{
++    memset(accum_pid, 0, sizeof(accum_pid));
++    pid_filter = pid;
++
++    {
++        char msg[64];
++        int l = scnprintf(msg, sizeof(msg), "SET PID FILTER %d\n", pid);
++        if (hpc_log_push(msg, l) != l)
++            pr_info_ratelimited("hpc: log fifo full (set pid)\n");
++    }
++}
++
++/* ---- Fonction appelée depuis le scheduler à chaque switch --------------- */
++
++void hpc_account_switch(struct task_struct *prev)
++{
++    unsigned long now[HPC_NUM];
++    unsigned long delta[HPC_NUM];
++    int i;
++
++    if (!hpc_toogle_filtering)
++        return;
++
++    /* Lire les HPM une seule fois par switch */
++    for (i = 0; i < HPC_NUM; i++) {
++        if (sbi_hpc_read(i + 3, &now[i])) { /* HPM3.. */
++            /* Lecture ratée : on n’attribue pas ce tour */
++            return;
++        }
++    }
++
++    /* Premier switch après activation : on initialise last_snapshot */
++    if (!last_valid) {
++        memcpy(last_snapshot, now, sizeof(now));
++        last_valid = 1;
++        return;
++    }
++
++    /* Calcul de delta = now - last_snapshot */
++    for (i = 0; i < HPC_NUM; i++) {
++        if (now[i] < last_snapshot[i]) {
++            /* Overflow ou reset : resynchronise sans attribuer */
++            memcpy(last_snapshot, now, sizeof(now));
++            return;
++        }
++        delta[i] = now[i] - last_snapshot[i];
++        accum_global[i] += delta[i];
++    }
++
++    /* Attribuer au PID suivi si la tâche sortante est ce PID */
++    if (pid_filter != -1 && prev->pid == pid_filter) {
++        for (i = 0; i < HPC_NUM; i++)
++            accum_pid[i] += delta[i];
++
++        /* Écrit dans le FIFO (au lieu de printk) */
++        show_hpc(accum_pid,    HPC_NUM, prev->pid, 0); /* PROCESS (filtré) */
++        show_hpc(accum_global, HPC_NUM, prev->pid, 1); /* GLOBAL            */
++    }
++
++    /* Armement pour le prochain switch */
++    memcpy(last_snapshot, now, sizeof(now));
++}
++
++/* ---- "Affichage" -> maintenant écrit dans debugfs/hpc_monitor/log ------- */
++
++void show_hpc(const unsigned long *hpc_values, int count, int current_pid, int status)
++{
++    /* status: 0 = filtré (PID), 1 = global */
++    char buffer[HPC_LOG_LINE_MAX];
++    int len = 0;
++    int i;
++
++    if (status == 0)
++        len += scnprintf(buffer + len, sizeof(buffer) - len, "FILTER PID %d", current_pid);
++    else
++        len += scnprintf(buffer + len, sizeof(buffer) - len, "GLOBAL PID %d", current_pid);
++
++    for (i = 0; i < count; i++)
++        len += scnprintf(buffer + len, sizeof(buffer) - len, " 0x%lX", hpc_values[i]);
++
++    /* Fin de ligne */
++    if (len < sizeof(buffer) - 1)
++        buffer[len++] = '\n';
++
++    /* Push vers le FIFO; si plein, on perd la ligne (ratelimit un printk) */
++    if (hpc_log_push(buffer, len) != len)
++        pr_info_ratelimited("hpc: log fifo full (drop line)\n");
++}
++
++/* ---- Init / Exit (à appeler depuis le code d'init de ton sous-système) -- */
++
++static int __init hpc_monitor_init(void)
++{
++    hpc_log_debugfs_init();
++    return 0;
++}
++
++static void __exit hpc_monitor_exit(void)
++{
++    hpc_log_debugfs_exit();
++}
++
++/*
++ * Si tu compiles ceci en module, garde ces macros.
++ * Si intégré en builtin, appelle hpc_monitor_init() depuis un initcall existant.
++ */
++module_init(hpc_monitor_init);
++module_exit(hpc_monitor_exit);
++MODULE_LICENSE("GPL");
++MODULE_DESCRIPTION("HPC filtering with debugfs logging");
+diff --git a/kernel/hpc/hpc_filtering.h b/kernel/hpc/hpc_filtering.h
+new file mode 100644
+index 0000000..726b817
+--- /dev/null
++++ b/kernel/hpc/hpc_filtering.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (C) 2025 Lab-STICC
++ */
++
++#ifndef _FILTERING_HPC_H
++#define _FILTERING_HPC_H
++
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/preempt.h>
++#include <linux/irqflags.h>
++#include <linux/sched.h>
++
++#include "sbi_hpc.h"
++
++/*
++ * Nous suivons HPM3..HPM(3+HPC_NUM-1).
++ * Adapte HPC_NUM à ton implémentation (ici 6).
++ */
++#define HPC_NUM 6
++
++/* API syscalls */
++int toogle_filtering(void);      /* on/off global (orthographe conservée) */
++void set_pid_filter(int pid);    /* choisir le PID à suivre, -1 = aucun */
++
++/* Appelée une fois par basculement de tâche dans le scheduler */
++void hpc_account_switch(struct task_struct *prev);
++
++/* Utilitaire d'affichage (debug) */
++void show_hpc(const unsigned long *hpc_values, int count, int current_pid, int status);
++
++#endif /* _FILTERING_HPC_H */
+diff --git a/kernel/hpc/sbi_hpc.c b/kernel/hpc/sbi_hpc.c
+new file mode 100644
+index 0000000..9a27b47
+--- /dev/null
++++ b/kernel/hpc/sbi_hpc.c
+@@ -0,0 +1,73 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (C) 2025 Lab-STICC
++ */
++
++#include <linux/errno.h>
++#include "sbi_hpc.h"
++
++int sbi_hpc_config(unsigned long hpm, unsigned long event)
++{
++	struct sbiret ret;
++	ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_CONFIG_HPM,
++	                hpm, event, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_read(unsigned long hpm, unsigned long *val)
++{
++	struct sbiret ret;
++	ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_READ_HPC,
++	                hpm, 0, 0, 0, 0, 0);
++	if (ret.error)
++		return ret.error;
++	if (val)
++		*val = ret.value;
++	return 0;
++}
++
++int sbi_hpc_inhibit(unsigned long hpm)
++{
++	struct sbiret ret;
++	ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_INHIBIT_HPC,
++	                hpm, 0, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_enable(unsigned long hpm)
++{
++	struct sbiret ret;
++	ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_ENABLE_HPC,
++	                hpm, 0, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_reset(unsigned long hpm)
++{
++	struct sbiret ret;
++	ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_RESET_HPC,
++	                hpm, 0, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_start(void)
++{
++	struct sbiret ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_START_HPC,
++	                               0, 0, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_stop(void)
++{
++	struct sbiret ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_STOP_HPC,
++	                               0, 0, 0, 0, 0, 0);
++	return ret.error;
++}
++
++int sbi_hpc_toggle_debug(void)
++{
++	struct sbiret ret = sbi_ecall(SBI_EXT_CSR_INTERFACE, SBI_CSR_SHOW_DEBUG,
++	                               0, 0, 0, 0, 0, 0);
++	return ret.error;
++}
+\ No newline at end of file
+diff --git a/kernel/hpc/sbi_hpc.h b/kernel/hpc/sbi_hpc.h
+new file mode 100644
+index 0000000..67406be
+--- /dev/null
++++ b/kernel/hpc/sbi_hpc.h
+@@ -0,0 +1,32 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/*
++ * Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (C) 2025 Lab-STICC
++ */
++
++#ifndef _SBI_HPC_H
++#define _SBI_HPC_H
++
++#include <linux/types.h>
++#include <asm/sbi.h>
++
++#define SBI_EXT_CSR_INTERFACE        0x0B000000
++#define SBI_CSR_CONFIG_HPM           0x0
++#define SBI_CSR_READ_HPC             0x1
++#define SBI_CSR_INHIBIT_HPC          0x2
++#define SBI_CSR_ENABLE_HPC           0x3
++#define SBI_CSR_RESET_HPC            0x4
++#define SBI_CSR_START_HPC            0x5
++#define SBI_CSR_STOP_HPC             0x6
++#define SBI_CSR_SHOW_DEBUG           0x7
++
++int sbi_hpc_config(unsigned long hpm, unsigned long event);
++int sbi_hpc_read(unsigned long hpm, unsigned long *val);
++int sbi_hpc_inhibit(unsigned long hpm);
++int sbi_hpc_enable(unsigned long hpm);
++int sbi_hpc_reset(unsigned long hpm);
++int sbi_hpc_start(void);
++int sbi_hpc_stop(void);
++int sbi_hpc_toggle_debug(void);
++
++#endif /* _SBI_HPC_H */
+\ No newline at end of file
+diff --git a/kernel/hpc/syscall_hpc.c b/kernel/hpc/syscall_hpc.c
+new file mode 100644
+index 0000000..44f7da9
+--- /dev/null
++++ b/kernel/hpc/syscall_hpc.c
+@@ -0,0 +1,79 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Copyright (C) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (C) 2025 Lab-STICC
++ */
++
++#include <linux/kernel.h>
++#include <linux/syscalls.h>
++#include <linux/uaccess.h>
++
++#include "sbi_hpc.h"
++#include "hpc_filtering.h"
++
++// Configure un HPM pour un event
++SYSCALL_DEFINE2(hpc_config, unsigned long, hpm, unsigned long, event)
++{
++    return sbi_hpc_config(hpm, event);
++}
++
++// Lit un HPM et retourne la valeur
++SYSCALL_DEFINE2(hpc_read, unsigned long, hpm, unsigned long __user *, val)
++{
++    unsigned long kernel_val;
++    int ret = sbi_hpc_read(hpm, &kernel_val);
++    if (ret)
++        return ret;
++    if (copy_to_user(val, &kernel_val, sizeof(unsigned long)))
++        return -EFAULT;
++    return 0;
++}
++
++// Inhibe un HPM
++SYSCALL_DEFINE1(hpc_inhibit, unsigned long, hpm)
++{
++    return sbi_hpc_inhibit(hpm);
++}
++
++// Active un HPM
++SYSCALL_DEFINE1(hpc_enable, unsigned long, hpm)
++{
++    return sbi_hpc_enable(hpm);
++}
++
++// Reset un HPM
++SYSCALL_DEFINE1(hpc_reset, unsigned long, hpm)
++{
++    return sbi_hpc_reset(hpm);
++}
++
++// Démarre tous les HPM
++SYSCALL_DEFINE0(hpc_start)
++{
++    return sbi_hpc_start();
++}
++
++// Stoppe tous les HPM
++SYSCALL_DEFINE0(hpc_stop)
++{
++    return sbi_hpc_stop();
++}
++
++// Active/désactive le mode debug
++SYSCALL_DEFINE0(hpc_toggle_debug)
++{
++    return sbi_hpc_toggle_debug();
++}
++
++// Active/désactive le filtrage
++SYSCALL_DEFINE0(hpc_toggle_filtering)
++{
++    return toogle_filtering();
++}
++
++// Défini le pid à filtrer
++SYSCALL_DEFINE1(hpc_set_pid_filter, int, pid)
++{
++    set_pid_filter(pid);
++    return 0;
++}
+\ No newline at end of file
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 77aa0e7..2767308 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -27,6 +27,8 @@
+ #include "pelt.h"
+ #include "smp.h"
+ 
++#include "../hpc/hpc_filtering.h"
++
+ /*
+  * Export tracepoints that act as a bare tracehook (ie: have no trace event
+  * associated with them) to allow external modules to probe them.
+@@ -4420,6 +4422,8 @@ static void __sched notrace __schedule(bool preempt)
+ 	rq = cpu_rq(cpu);
+ 	prev = rq->curr;
+ 
++	hpc_account_switch(prev);
++
+ 	schedule_debug(prev, preempt);
+ 
+ 	if (sched_feat(HRTICK))
+
+base-commit: 659361086d8b2ee2c8318f390029a350a6e7fb61
+-- 
+2.43.0
+

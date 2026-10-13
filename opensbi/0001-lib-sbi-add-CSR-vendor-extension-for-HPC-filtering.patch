@@ -1,0 +1,272 @@
+From f27205376ef87b6c77dc0ef829327c4d9b5df424 Mon Sep 17 00:00:00 2001
+From: Adam Henault <contact@adamhlt.com>
+Date: Tue, 13 Oct 2026 09:53:20 +0200
+Subject: [PATCH] lib: sbi: add CSR vendor extension for HPC filtering
+
+Add an SBI ecall extension that lets S-mode configure, start, stop,
+reset and read the machine-level hardware performance counters
+(mhpmcounter/mhpmevent) used by the Linux HPC filtering patch.
+---
+ include/sbi/sbi_ecall.h     |   1 +
+ lib/sbi/objects.mk          |   2 +
+ lib/sbi/sbi_csr_interface.c | 208 ++++++++++++++++++++++++++++++++++++
+ lib/sbi/sbi_ecall.c         |   3 +
+ 4 files changed, 214 insertions(+)
+ create mode 100644 lib/sbi/sbi_csr_interface.c
+
+diff --git a/include/sbi/sbi_ecall.h b/include/sbi/sbi_ecall.h
+index 9500d043..df6d9888 100644
+--- a/include/sbi/sbi_ecall.h
++++ b/include/sbi/sbi_ecall.h
+@@ -40,6 +40,7 @@ extern struct sbi_ecall_extension ecall_vendor;
+ extern struct sbi_ecall_extension ecall_hsm;
+ extern struct sbi_ecall_extension ecall_srst;
+ extern struct sbi_ecall_extension ecall_pmu;
++extern struct sbi_ecall_extension csr_interface;
+ 
+ u16 sbi_ecall_version_major(void);
+ 
+diff --git a/lib/sbi/objects.mk b/lib/sbi/objects.mk
+index 7096f245..a679bca6 100644
+--- a/lib/sbi/objects.mk
++++ b/lib/sbi/objects.mk
+@@ -43,3 +43,5 @@ libsbi-objs-y += sbi_tlb.o
+ libsbi-objs-y += sbi_trap.o
+ libsbi-objs-y += sbi_unpriv.o
+ libsbi-objs-y += sbi_expected_trap.o
++
++libsbi-objs-y += sbi_csr_interface.o
+diff --git a/lib/sbi/sbi_csr_interface.c b/lib/sbi/sbi_csr_interface.c
+new file mode 100644
+index 00000000..8dea07a9
+--- /dev/null
++++ b/lib/sbi/sbi_csr_interface.c
+@@ -0,0 +1,208 @@
++/*
++ * SPDX-License-Identifier: BSD-2-Clause
++ *
++ * Copyright (c) 2025 Adam Henault <contact@adamhlt.com>
++ * Copyright (c) 2025 Lab-STICC
++ */
++
++#include <stdint.h>
++
++#include <sbi/sbi_console.h>
++#include <sbi/sbi_ecall.h>
++#include <sbi/sbi_ecall_interface.h>
++#include <sbi/sbi_error.h>
++#include <sbi/riscv_asm.h>
++#include <sbi/sbi_trap.h>
++
++#define SBI_EXT_CSR_INTERFACE   		0x0B000000
++#define SBI_CSR_INTERFACE_CONFIG_HPM 	0x0
++#define SBI_CSR_INTERFACE_READ_HPC  	0x1
++#define SBI_CSR_INTERFACE_INHIBIT_HPC  	0x2
++#define SBI_CSR_INTERFACE_ENABLE_HPC  	0x3
++#define SBI_CSR_INTERFACE_RESET_HPC  	0x4
++#define SBI_CSR_INTERFACE_START_HPC  	0x5
++#define SBI_CSR_INTERFACE_STOP_HPC  	0x6
++#define SBI_CSR_INTERFACE_SHOW_DEBUG 	0x7
++
++#define MAX_HPM	0x8
++
++uint8_t debug = FALSE;
++
++static int sbi_csr_interface_handler(unsigned long extid, unsigned long funcid,
++				 const struct sbi_trap_regs *regs,
++				 unsigned long *out_val,
++				 struct sbi_trap_info *out_trap)
++{
++	switch (funcid)
++	{
++	case SBI_CSR_INTERFACE_CONFIG_HPM:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] CONFIG HPM (HPM: 0x%X Event: 0x%X)\n\r",
++				(unsigned int)regs->a0, (unsigned int)regs->a1);
++
++		if (regs->a0 < 3 || regs->a0 > MAX_HPM)
++			return SBI_ERR_INVALID_PARAM;
++
++		switch(regs->a0)
++		{
++			case 0x3:
++			csr_write(CSR_MHPMEVENT3, regs->a1);
++			break;
++
++			case 0x4:
++			csr_write(CSR_MHPMEVENT4, regs->a1);
++			break;
++
++			case 0x5:
++			csr_write(CSR_MHPMEVENT5, regs->a1);
++			break;
++
++			case 0x6:
++			csr_write(CSR_MHPMEVENT6, regs->a1);
++			break;
++
++			case 0x7:
++			csr_write(CSR_MHPMEVENT7, regs->a1);
++			break;
++
++			case 0x8:
++			csr_write(CSR_MHPMEVENT8, regs->a1);
++			break;
++		}
++
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_READ_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] READ HPC (HPC: 0x%X)\n\r",
++				(unsigned int)regs->a0);
++
++		uint32_t hpc_value;
++
++		if (regs->a0 < 3 || regs->a0 > MAX_HPM)
++			return SBI_ERR_INVALID_PARAM;
++
++		switch(regs->a0)
++		{
++			case 0x3:
++			hpc_value = csr_read(CSR_MHPMCOUNTER3);
++			break;
++
++			case 0x4:
++			hpc_value = csr_read(CSR_MHPMCOUNTER4);
++			break;
++
++			case 0x5:
++			hpc_value = csr_read(CSR_MHPMCOUNTER5);
++			break;
++
++			case 0x6:
++			hpc_value = csr_read(CSR_MHPMCOUNTER6);
++			break;
++
++			case 0x7:
++			hpc_value = csr_read(CSR_MHPMCOUNTER7);
++			break;
++
++			case 0x8:
++			hpc_value = csr_read(CSR_MHPMCOUNTER8);
++			break;
++		}
++
++		*out_val = hpc_value;
++
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_INHIBIT_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] INHIBIT HPC (HPC: 0x%X)\n\r",
++				(unsigned int)regs->a0);
++
++		if (regs->a0 < 3 || regs->a0 > MAX_HPM)
++			return SBI_ERR_INVALID_PARAM;
++
++		uint32_t inhibit_mask = 1 << regs->a0;
++		uint32_t inhibit = csr_read(CSR_MCOUNTINHIBIT);
++		csr_write(CSR_MCOUNTINHIBIT, inhibit | inhibit_mask);
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_ENABLE_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] ENABLE HPC (HPC: 0x%X)\n\r",
++				(unsigned int)regs->a0);
++
++		if (regs->a0 < 3 || regs->a0 > MAX_HPM)
++			return SBI_ERR_INVALID_PARAM;
++
++		uint32_t enable_mask = ~(1 << regs->a0);
++		uint32_t enable = csr_read(CSR_MCOUNTINHIBIT);
++		csr_write(CSR_MCOUNTINHIBIT, enable & enable_mask);
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_RESET_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] RESET HPC (HPC: 0x%X)\n\r",
++				(unsigned int)regs->a0);
++
++		if (regs->a0 < 3 || regs->a0 > MAX_HPM)
++			return SBI_ERR_INVALID_PARAM;
++
++		switch(regs->a0)
++		{
++			case 0x3:
++			csr_write(CSR_MHPMCOUNTER3, 0);
++			break;
++
++			case 0x4:
++			csr_write(CSR_MHPMCOUNTER4, 0);
++			break;
++
++			case 0x5:
++			csr_write(CSR_MHPMCOUNTER5, 0);
++			break;
++
++			case 0x6:
++			csr_write(CSR_MHPMCOUNTER6, 0);
++			break;
++
++			case 0x7:
++			csr_write(CSR_MHPMCOUNTER7, 0);
++			break;
++
++			case 0x8:
++			csr_write(CSR_MHPMCOUNTER8, 0);
++			break;
++		}
++
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_START_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] START HPC\n\r");
++
++		csr_write(CSR_MCOUNTINHIBIT, 0);
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_STOP_HPC:
++		if(debug == TRUE)
++			sbi_printf("\n\r[CSR_INTERFACE] STOP HPC\n\r");
++
++		csr_write(CSR_MCOUNTINHIBIT, 0xFFFFFFFFFFFFFFFF);
++        return SBI_SUCCESS;
++
++	case SBI_CSR_INTERFACE_SHOW_DEBUG:
++		debug = !debug;
++		sbi_printf("\n\r[CSR_INTERFACE] DEBUG TOGGLE TO 0x%X \n\r", debug);
++
++		return SBI_SUCCESS;
++
++	default:
++		return SBI_ERR_NOT_SUPPORTED;
++	}
++}
++
++struct sbi_ecall_extension csr_interface = {
++	.extid_start = SBI_EXT_CSR_INTERFACE,
++	.extid_end   = SBI_EXT_CSR_INTERFACE,
++	.handle	     = sbi_csr_interface_handler,
++};
+\ No newline at end of file
+diff --git a/lib/sbi/sbi_ecall.c b/lib/sbi/sbi_ecall.c
+index ce021eba..34fdce15 100644
+--- a/lib/sbi/sbi_ecall.c
++++ b/lib/sbi/sbi_ecall.c
+@@ -171,6 +171,9 @@ int sbi_ecall_init(void)
+ 	if (ret)
+ 		return ret;
+ 	ret = sbi_ecall_register_extension(&ecall_vendor);
++	if (ret)
++		return ret;
++	ret = sbi_ecall_register_extension(&csr_interface);
+ 	if (ret)
+ 		return ret;
+ 
+
+base-commit: be245acfffa297b5ed4e0c7bb473a6bd55231bf8
+-- 
+2.43.0
+

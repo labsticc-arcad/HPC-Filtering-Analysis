@@ -1,0 +1,16 @@
+version = 1
+
+[[annotations]]
+path = "linux/**"
+SPDX-FileCopyrightText = ["2025 Adam Henault <contact@adamhlt.com>", "2025 Lab-STICC"]
+SPDX-License-Identifier = "GPL-2.0-only"
+
+[[annotations]]
+path = "opensbi/**"
+SPDX-FileCopyrightText = ["2025 Adam Henault <contact@adamhlt.com>", "2025 Lab-STICC"]
+SPDX-License-Identifier = "BSD-2-Clause"
+
+[[annotations]]
+path = ["README.md", "REUSE.toml", ".gitignore"]
+SPDX-FileCopyrightText = ["2025 Adam Henault <contact@adamhlt.com>", "2025 Lab-STICC"]
+SPDX-License-Identifier = "MIT"
