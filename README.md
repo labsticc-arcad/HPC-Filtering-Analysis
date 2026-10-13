@@ -1,7 +1,7 @@
 # HPC-Filtering-Analysis
 
 Software patches implementing **per-process filtering of RISC-V hardware
-performance counters (HPC)**, developed as part of a PhD on HPC-based
+performance counters (HPC)**, developed as part of a study on HPC-based
 detection, on the [Cheshire](https://github.com/pulp-platform/cheshire)
 SoC (CVA6) running Linux.
 
